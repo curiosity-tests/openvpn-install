@@ -4,6 +4,7 @@ set -e
 echo "=== OpenVPN Server Container ==="
 
 /opt/test/local-network-detection.sh /opt/openvpn-install.sh
+/opt/test/interactive-install-flow.sh /opt/openvpn-install.sh
 
 # Create TUN device if it doesn't exist
 if [ ! -c /dev/net/tun ]; then
@@ -184,6 +185,21 @@ if [ "$INSTALL_EXIT_CODE" -ne 0 ]; then
 	echo "ERROR: Install script failed with exit code $INSTALL_EXIT_CODE"
 	exit 1
 fi
+
+# Native firewall backends must not require the iptables package. The fallback
+# backend must install it because the test image does not include it.
+if systemctl is-active --quiet firewalld || systemctl is-active --quiet nftables; then
+	if command -v dpkg-query >/dev/null && dpkg-query -W -f='${db:Status-Abbrev}' iptables 2>/dev/null | grep -q '^ii'; then
+		echo "FAIL: iptables was installed with a native firewall backend"
+		exit 1
+	fi
+else
+	if ! command -v iptables >/dev/null; then
+		echo "FAIL: iptables fallback dependency was not installed"
+		exit 1
+	fi
+fi
+echo "PASS: Firewall dependencies match the selected backend"
 
 # Verify all expected files were created
 echo "Verifying installation..."

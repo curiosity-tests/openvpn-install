@@ -1854,8 +1854,9 @@ cmd_interactive() {
 	if isOpenVPNInstalled; then
 		manageMenu
 	else
-		installQuestions
-		installOpenVPN
+		# Reuse the install command so interactive installs receive the same
+		# validation and derived network configuration as non-interactive installs.
+		cmd_install --interactive
 	fi
 }
 
@@ -2426,6 +2427,17 @@ function detect_server_ips() {
 		IP="$IP_IPV6"
 	else
 		IP="$IP_IPV4"
+	fi
+}
+
+# Select the active firewall manager, with iptables as the fallback.
+function detect_firewall_backend() {
+	if systemctl is-active --quiet firewalld; then
+		echo firewalld
+	elif systemctl is-active --quiet nftables; then
+		echo nftables
+	else
+		echo iptables
 	fi
 }
 
@@ -3047,6 +3059,10 @@ function installOpenVPN() {
 		fi
 	fi
 
+	# Select the firewall backend before installing dependencies so native
+	# firewalld and nftables systems do not need the iptables package.
+	FIREWALL_BACKEND=$(detect_firewall_backend)
+
 	# If OpenVPN isn't installed yet, install it. This script is more-or-less
 	# idempotent on multiple runs, but will only install OpenVPN from upstream
 	# the first time.
@@ -3057,21 +3073,26 @@ function installOpenVPN() {
 		installOpenVPNRepo
 
 		log_info "Installing OpenVPN and dependencies..."
-		# socat is used for communicating with the OpenVPN management interface (client disconnect on revoke)
+		# iptables is only required by the fallback backend. socat communicates
+		# with the OpenVPN management interface for client disconnect on revoke.
+		local -a firewall_packages=()
+		if [[ $FIREWALL_BACKEND == 'iptables' ]]; then
+			firewall_packages+=(iptables)
+		fi
 		if [[ $OS =~ (debian|ubuntu) ]]; then
-			run_cmd_fatal "Installing OpenVPN" apt-get install -y openvpn iptables openssl curl ca-certificates tar dnsutils socat
+			run_cmd_fatal "Installing OpenVPN" apt-get install -y openvpn "${firewall_packages[@]}" openssl curl ca-certificates tar dnsutils socat
 		elif [[ $OS == 'centos' ]]; then
-			run_cmd_fatal "Installing OpenVPN" yum install -y openvpn iptables openssl ca-certificates curl tar bind-utils socat 'policycoreutils-python*'
+			run_cmd_fatal "Installing OpenVPN" yum install -y openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind-utils socat 'policycoreutils-python*'
 		elif [[ $OS == 'oracle' ]]; then
-			run_cmd_fatal "Installing OpenVPN" yum install -y openvpn iptables openssl ca-certificates curl tar bind-utils socat policycoreutils-python-utils
+			run_cmd_fatal "Installing OpenVPN" yum install -y openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind-utils socat policycoreutils-python-utils
 		elif [[ $OS == 'amzn2023' ]]; then
-			run_cmd_fatal "Installing OpenVPN" dnf install -y openvpn iptables openssl ca-certificates curl tar bind-utils socat
+			run_cmd_fatal "Installing OpenVPN" dnf install -y openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind-utils socat
 		elif [[ $OS == 'fedora' ]]; then
-			run_cmd_fatal "Installing OpenVPN" dnf install -y openvpn iptables openssl ca-certificates curl tar bind-utils socat policycoreutils-python-utils
+			run_cmd_fatal "Installing OpenVPN" dnf install -y openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind-utils socat policycoreutils-python-utils
 		elif [[ $OS == 'opensuse' ]]; then
-			run_cmd_fatal "Installing OpenVPN" zypper install -y openvpn iptables openssl ca-certificates curl tar bind-utils socat
+			run_cmd_fatal "Installing OpenVPN" zypper install -y openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind-utils socat
 		elif [[ $OS == 'arch' ]]; then
-			run_cmd_fatal "Installing OpenVPN" pacman --needed --noconfirm -Syu openvpn iptables openssl ca-certificates curl tar bind socat
+			run_cmd_fatal "Installing OpenVPN" pacman --needed --noconfirm -Syu openvpn "${firewall_packages[@]}" openssl ca-certificates curl tar bind socat
 		fi
 
 		# Verify ChaCha20-Poly1305 compatibility if selected
@@ -3493,13 +3514,6 @@ verb 3"
 	} >>/etc/openvpn/server/server.conf
 
 	# Record installer-owned policy so firewall rules can be removed exactly.
-	if systemctl is-active --quiet firewalld; then
-		FIREWALL_BACKEND=firewalld
-	elif systemctl is-active --quiet nftables; then
-		FIREWALL_BACKEND=nftables
-	else
-		FIREWALL_BACKEND=iptables
-	fi
 	{
 		echo "FIREWALL_BACKEND=$FIREWALL_BACKEND"
 		echo "ROUTE_INTERNET=$ROUTE_INTERNET"
