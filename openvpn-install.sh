@@ -3071,6 +3071,15 @@ function installOpenVPN() {
 	# Select the firewall backend before installing dependencies so native
 	# firewalld and nftables systems do not need the iptables package.
 	FIREWALL_BACKEND=$(detect_firewall_backend)
+	FIREWALLD_PORT_ZONE=""
+	if [[ $FIREWALL_BACKEND == 'firewalld' ]]; then
+		if [[ -n $NIC ]]; then
+			FIREWALLD_PORT_ZONE=$(firewall-cmd --get-zone-of-interface="$NIC" 2>/dev/null || true)
+		fi
+		if [[ -z $FIREWALLD_PORT_ZONE || $FIREWALLD_PORT_ZONE == 'no zone' ]]; then
+			FIREWALLD_PORT_ZONE=$(firewall-cmd --get-default-zone)
+		fi
+	fi
 
 	# If OpenVPN isn't installed yet, install it. This script is more-or-less
 	# idempotent on multiple runs, but will only install OpenVPN from upstream
@@ -3525,6 +3534,7 @@ verb 3"
 	# Record installer-owned policy so firewall rules can be removed exactly.
 	{
 		echo "FIREWALL_BACKEND=$FIREWALL_BACKEND"
+		echo "FIREWALLD_PORT_ZONE=$FIREWALLD_PORT_ZONE"
 		echo "ROUTE_INTERNET=$ROUTE_INTERNET"
 		echo "CLIENT_TO_CLIENT=$CLIENT_TO_CLIENT"
 		echo "LOCAL_NETWORKS=$LOCAL_NETWORKS"
@@ -3651,7 +3661,7 @@ verb 3"
 		# destination rules to forwarded traffic; zone rich rules alone only
 		# govern traffic addressed to the server.
 		log_info "firewalld detected, using firewall-cmd..."
-		run_cmd_fatal "Adding OpenVPN port to firewalld" firewall-cmd --permanent --add-port="$PORT/$PROTOCOL"
+		run_cmd_fatal "Adding OpenVPN port to firewalld zone $FIREWALLD_PORT_ZONE" firewall-cmd --permanent --zone="$FIREWALLD_PORT_ZONE" --add-port="$PORT/$PROTOCOL"
 		run_cmd_fatal "Creating OpenVPN firewalld zone" firewall-cmd --permanent --new-zone=openvpn-install
 		run_cmd_fatal "Creating OpenVPN firewalld policy" firewall-cmd --permanent --new-policy=openvpn-egress
 		run_cmd_fatal "Setting OpenVPN policy ingress" firewall-cmd --permanent --policy=openvpn-egress --add-ingress-zone=openvpn-install
@@ -5045,6 +5055,7 @@ function removeOpenVPN() {
 		if [[ -f $install_config ]]; then
 			has_policy_manifest=y
 			FIREWALL_BACKEND=$(grep '^FIREWALL_BACKEND=' "$install_config" | cut -d= -f2-)
+			FIREWALLD_PORT_ZONE=$(grep '^FIREWALLD_PORT_ZONE=' "$install_config" | cut -d= -f2- || true)
 			ROUTE_INTERNET=$(grep '^ROUTE_INTERNET=' "$install_config" | cut -d= -f2-)
 			CLIENT_TO_CLIENT=$(grep '^CLIENT_TO_CLIENT=' "$install_config" | cut -d= -f2-)
 			LOCAL_NETWORKS=$(grep '^LOCAL_NETWORKS=' "$install_config" | cut -d= -f2-)
@@ -5064,7 +5075,14 @@ function removeOpenVPN() {
 		# Remove firewall rules
 		log_info "Removing firewall rules..."
 		if systemctl is-active --quiet firewalld && { [[ $has_policy_manifest == 'y' && $FIREWALL_BACKEND == 'firewalld' ]] || { [[ $has_policy_manifest == 'n' ]] && firewall-cmd --list-ports | grep -q "$PORT/$PROTOCOL_BASE"; }; }; then
-			run_cmd "Removing OpenVPN port from firewalld" firewall-cmd --permanent --remove-port="$PORT/$PROTOCOL_BASE"
+			if [[ $has_policy_manifest == 'y' ]]; then
+				if [[ -z $FIREWALLD_PORT_ZONE ]]; then
+					FIREWALLD_PORT_ZONE=$(firewall-cmd --get-default-zone)
+				fi
+				run_cmd "Removing OpenVPN port from firewalld zone $FIREWALLD_PORT_ZONE" firewall-cmd --permanent --zone="$FIREWALLD_PORT_ZONE" --remove-port="$PORT/$PROTOCOL_BASE"
+			else
+				run_cmd "Removing OpenVPN port from firewalld" firewall-cmd --permanent --remove-port="$PORT/$PROTOCOL_BASE"
+			fi
 			if [[ $has_policy_manifest == 'y' ]]; then
 				firewall-cmd --permanent --delete-policy=openvpn-egress 2>/dev/null || true
 				firewall-cmd --permanent --delete-zone=openvpn-install 2>/dev/null || true

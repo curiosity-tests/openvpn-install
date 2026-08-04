@@ -6,6 +6,15 @@ echo "=== OpenVPN Server Container ==="
 /opt/test/local-network-detection.sh /opt/openvpn-install.sh
 /opt/test/interactive-install-flow.sh /opt/openvpn-install.sh
 
+# Verify that the installer uses the zone bound to the public interface, not
+# firewalld's default zone.
+if systemctl is-active --quiet firewalld; then
+	FIREWALLD_TEST_INTERFACE=$(ip -4 route ls | awk '/^default / { for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+	firewall-cmd --set-default-zone=public >/dev/null
+	firewall-cmd --permanent --zone=external --change-interface="$FIREWALLD_TEST_INTERFACE" >/dev/null
+	firewall-cmd --reload >/dev/null
+fi
+
 # Create TUN device if it doesn't exist
 if [ ! -c /dev/net/tun ]; then
 	mkdir -p /dev/net
@@ -301,6 +310,10 @@ for setting in "ROUTE_INTERNET=$ROUTE_INTERNET" "CLIENT_TO_CLIENT=$CLIENT_TO_CLI
 		exit 1
 	}
 done
+if systemctl is-active --quiet firewalld && ! grep -Fxq 'FIREWALLD_PORT_ZONE=external' /etc/openvpn/server/openvpn-install.conf; then
+	echo "FAIL: Policy manifest is missing the public interface's firewalld zone"
+	exit 1
+fi
 
 echo "PASS: Access policy configuration is correct"
 
@@ -831,11 +844,17 @@ if systemctl is-active --quiet firewalld; then
 		echo "FAIL: firewalld zone-wide masquerade should not be enabled"
 		exit 1
 	fi
-	if firewall-cmd --list-ports | grep -q "1194/udp"; then
-		echo "PASS: OpenVPN port is open in firewalld"
+	FIREWALLD_PORT_ZONE=$(grep '^FIREWALLD_PORT_ZONE=' /etc/openvpn/server/openvpn-install.conf | cut -d= -f2-)
+	if firewall-cmd --zone="$FIREWALLD_PORT_ZONE" --query-port="1194/udp"; then
+		echo "PASS: OpenVPN port is open in the public interface's firewalld zone"
 	else
-		echo "FAIL: OpenVPN port not found in firewalld"
-		firewall-cmd --list-ports
+		echo "FAIL: OpenVPN port not found in firewalld zone $FIREWALLD_PORT_ZONE"
+		firewall-cmd --zone="$FIREWALLD_PORT_ZONE" --list-ports
+		exit 1
+	fi
+	FIREWALLD_DEFAULT_ZONE=$(firewall-cmd --get-default-zone)
+	if [ "$FIREWALLD_DEFAULT_ZONE" != "$FIREWALLD_PORT_ZONE" ] && firewall-cmd --zone="$FIREWALLD_DEFAULT_ZONE" --query-port="1194/udp"; then
+		echo "FAIL: OpenVPN port was also added to firewalld's default zone"
 		exit 1
 	fi
 elif systemctl is-active --quiet nftables; then
