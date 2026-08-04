@@ -2276,6 +2276,12 @@ function installUnbound() {
 		fi
 	fi
 
+	# openSUSE ships the DNSSEC root trust anchor updater separately. Ensure the
+	# anchor can follow root key rollovers before starting the resolver.
+	if [[ $OS == "opensuse" ]] && ! command -v unbound-anchor >/dev/null; then
+		run_cmd_fatal "Installing Unbound trust anchor updater" zypper install -y unbound-anchor
+	fi
+
 	# Configure Unbound for OpenVPN (runs whether freshly installed or pre-existing)
 	# Create conf.d directory (works on all distros)
 	run_cmd "Creating Unbound config directory" mkdir -p /etc/unbound/unbound.conf.d
@@ -2343,6 +2349,9 @@ function installUnbound() {
 		fi
 	} >/etc/unbound/unbound.conf.d/openvpn.conf
 
+	if [[ $OS == "opensuse" ]]; then
+		run_cmd_fatal "Updating Unbound root trust anchor" systemctl start unbound-anchor.service
+	fi
 	run_cmd "Enabling Unbound service" systemctl enable unbound
 	run_cmd "Starting Unbound service" systemctl restart unbound
 
