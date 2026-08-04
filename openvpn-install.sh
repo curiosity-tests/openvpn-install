@@ -2258,6 +2258,13 @@ function installOpenVPNRepo() {
 	fi
 }
 
+# unbound-anchor returns 1 when it successfully replaces the anchor.
+function refreshUnboundTrustAnchor() {
+	local status=0
+	runuser -u unbound -- unbound-anchor -F || status=$?
+	[[ $status -le 1 ]]
+}
+
 function installUnbound() {
 	log_info "Installing Unbound DNS resolver..."
 
@@ -2276,10 +2283,19 @@ function installUnbound() {
 		fi
 	fi
 
-	# openSUSE ships the DNSSEC root trust anchor updater separately. Ensure the
-	# anchor can follow root key rollovers before starting the resolver.
-	if [[ $OS == "opensuse" ]] && ! command -v unbound-anchor >/dev/null; then
-		run_cmd_fatal "Installing Unbound trust anchor updater" zypper install -y unbound-anchor
+	# Some distributions ship the DNSSEC root trust anchor updater separately.
+	if ! command -v unbound-anchor >/dev/null; then
+		if [[ $OS =~ (debian|ubuntu) ]]; then
+			run_cmd_fatal "Installing Unbound trust anchor updater" apt-get install -y unbound-anchor
+		elif [[ $OS =~ (centos|oracle) ]]; then
+			run_cmd_fatal "Installing Unbound trust anchor updater" yum install -y unbound-anchor
+		elif [[ $OS =~ (fedora|amzn2023) ]]; then
+			run_cmd_fatal "Installing Unbound trust anchor updater" dnf install -y unbound-anchor
+		elif [[ $OS == "opensuse" ]]; then
+			run_cmd_fatal "Installing Unbound trust anchor updater" zypper install -y unbound-anchor
+		elif [[ $OS == "arch" ]]; then
+			run_cmd_fatal "Installing Unbound trust anchor updater" pacman -S --noconfirm unbound
+		fi
 	fi
 
 	# Configure Unbound for OpenVPN (runs whether freshly installed or pre-existing)
@@ -2349,9 +2365,7 @@ function installUnbound() {
 		fi
 	} >/etc/unbound/unbound.conf.d/openvpn.conf
 
-	if [[ $OS == "opensuse" ]]; then
-		run_cmd_fatal "Updating Unbound root trust anchor" systemctl start unbound-anchor.service
-	fi
+	run_cmd_fatal "Refreshing Unbound root trust anchor" refreshUnboundTrustAnchor
 	run_cmd "Enabling Unbound service" systemctl enable unbound
 	run_cmd "Starting Unbound service" systemctl restart unbound
 
